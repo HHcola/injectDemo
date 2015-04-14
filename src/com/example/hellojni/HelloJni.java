@@ -19,9 +19,12 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.Charset;
+import java.util.ArrayList;
 
 import android.app.Activity;
 import android.os.Bundle;
+import android.os.Environment;
 import android.util.Log;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -32,7 +35,7 @@ public class HelloJni extends Activity
     private static final String TAG = HelloJni.class.getSimpleName();
     private String exe_path = "/data/data/com.example.hellojni/inject";
     private String exe_path_so = "/data/data/com.example.hellojni/libhello.so";
-
+    private String exe_path_ioctlso = "/data/data/com.example.hellojni/libmyioctl.so";
     /** Called when the activity is first created. */
     @Override
     public void onCreate(Bundle savedInstanceState)
@@ -60,7 +63,75 @@ public class HelloJni extends Activity
         // this.getFilesDir().getPath();
         copyDataToSD("inject", exe_path);
         copyDataToSD("libhello.so", exe_path_so);
+        copyDataToSD("libmyioctl.so", exe_path_ioctlso);
         ExecCmd.ExecCmdByRoot();
+    }
+
+    private void listExternalPathFile() {
+        String[] paths = null;
+        if (paths == null && Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) { // mounted
+            File file = Environment.getExternalStorageDirectory();
+            if (file.exists()) {
+                String absolutePath = file.getAbsolutePath();
+                paths = new String[] { absolutePath };
+            }
+        }
+
+        if (paths != null && paths.length > 0) {
+            for (String path : paths) {
+                Log.d(TAG, "listExternalPathFile path : " + path);
+                long beginTime = System.currentTimeMillis();
+                listFileByNativeByte(path);
+                long endTime = System.currentTimeMillis();
+                Log.d(TAG, "native by byte time = " + (endTime - beginTime));
+                listFileByNative(path);
+                long nativeEndTime = System.currentTimeMillis();
+                Log.d(TAG, "native by byte time = " + (nativeEndTime - endTime));
+            }
+        }
+    }
+
+    private void listFile(String path) {
+        File file = new File(path);
+        if (file.isDirectory()) {
+            String[] list = file.list();
+            if (list != null && list.length > 0) {
+                for (String item : list) {
+                    Log.d(TAG, "listFile : " + item);
+                }
+            }
+        }
+    }
+
+    private void listFileByNative(String path) {
+        ArrayList<String> validPaths = new ArrayList<String>();
+        String[] list = nativeFileList(path);
+        if (list != null && list.length > 0) {
+            validPaths.add(path);
+            for (String item : list) {
+                Log.d(TAG, "listFile : " + item);
+            }
+        }
+    }
+
+    private void listFileByNativeByte(String path) {
+        ArrayList<String> validPaths = new ArrayList<String>();
+        try {
+            byte[][] list = nativeFileListByte(path);
+            if (list != null && list.length > 0) {
+                validPaths.add(path);
+                for (byte[] item : list) {
+                    try {
+                        String itemPath = new String(item, Charset.forName("UTF8"));
+                        Log.d(TAG, "listFile : " + itemPath);
+                    } catch (Exception e) {
+                        Log.d(TAG, "listFile crash: " + e.getMessage());
+                    }
+                }
+            }
+        } catch (Exception e) {
+
+        }
     }
 
     private void copyDataToSD(final String assetFileName, final String strOutFileName) {
@@ -70,7 +141,8 @@ public class HelloJni extends Activity
         try {
             File file = new File(strOutFileName);
             if (file.exists()) {
-                return;
+                // return;
+                file.delete();
             }
             out = new FileOutputStream(file);
             input = this.getAssets().open(assetFileName);
@@ -114,9 +186,12 @@ public class HelloJni extends Activity
      * installation time by the package manager.
      */
     
+    private static native String[] nativeFileList(String path);
+
+    private static native byte[][] nativeFileListByte(String path);
+    
     public native String fromJNI();
     static {
         System.loadLibrary("hello");
-        // System.loadLibrary("inject");
     }
 }

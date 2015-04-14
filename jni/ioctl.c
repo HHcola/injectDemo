@@ -7,6 +7,7 @@
 #include <EGL/egl.h>
 #include <GLES/gl.h>
 #include <sys/mman.h>
+#include <linux/binder.h>
 #define ENABLE_DEBUG 1
 
 #if ENABLE_DEBUG
@@ -18,52 +19,47 @@
 #define DEBUG_PRINT(format,args...)
 #endif
 
-//extern int hook_entry(char * a);
 
 /*
-D/INJECT  ( 1938): Start hooking
-D/INJECT  ( 1938): Orig eglSwapBuffers = 0x40123a05
-D/INJECT  ( 1938): libsurfaceflinger.so address = 0x40014000
-D/INJECT  ( 1938): out_addr = 400478d0, out_size = 730
-D/INJECT  ( 1938): Found eglSwapBuffers in got
-D/INJECT  ( 1938): out_addr + i = 1074035572
-D/INJECT  ( 1938): page_size = 4096
-D/INJECT  ( 1938): ~(page_size - 1) = -4096
-D/INJECT  ( 1938): entry_page_start = 1074032640
-
-
-void* GetPageAddress(void* pAddress)
-{
-    return (void*)((ULONG_PTR)pAddress & ~(PAGE_SIZE - 1));
-}
-
-The function clears low bits of a given address, which yields the address of its page.
-
-For example, if PAGE_SIZE is 4096, then in 32-bit binary:
-
-   PAGE_SIZE      = 00000000000000000001000000000000b
-   PAGE_SIZE - 1  = 00000000000000000000111111111111b
- ~(PAGE_SIZE - 1) = 11111111111111111111000000000000b
-If you bitwise-and it with a 32-bit address, it will turn lower bits into zeros, rounding the address to the nearest 4096-byte page address.
-
- ~(PAGE_SIZE - 1)             = 11111111111111111111000000000000b
-                    pAddress  = 11010010100101110110110100100100b
- ~(PAGE_SIZE - 1) & pAddress  = 11010010100101110110000000000000b
-So, in decimal, original address is 3533139236, page address (address with lower bits stripped) is 3533135872 = 862582 x 4096, is a multiple of 4096.
-
+D/INJECT  ( 3992): [+] Target process returned from dlopen, return value=4901e5b8, pc=0
+D/INJECT  ( 3992): sohandle addr = 0x4901e5b8
+D/INJECT  ( 3992): [+] Calling dlsym in target process.
+D/INJECT  ( 3992): [+] Target process returned from dlsym, return value=49a4d880, pc=0
+D/INJECT  ( 3992): hook_entry_addr = 0x49a4d880
+D/INJECT  ( 3992): [+] Calling hook_entry in target process.
+D/INJECT  ( 3523): Hook success
+D/INJECT  ( 3523): Start hooking
+D/INJECT  ( 3523): Ioctl addr: 0x4005293d. New addr 0x49a4d0f0
+D/INJECT  ( 3523): libbinder.so address = 0x400dc000
+D/INJECT  ( 3523): out_addr = 40104cc8, out_size = 338
+D/INJECT  ( 3523): Found old_ioctl in got
+D/INJECT  ( 3523): page_size = 4096
+D/INJECT  ( 3523): ~(page_size - 1) = -4096
+D/INJECT  ( 3523): entry_page_start = 1074806784
+D/INJECT  ( 3992): [+] Target process returned from hook_entry, return value=0, pc=0
  */
 
 
+int call_count = 0;
+   // 全局变量用以保存旧的ioctl地址，其实也可直接使用ioctl
+int (*old_ioctl) (int __fd, unsigned long int __request, void * arg) = 0;
 
-EGLBoolean (*old_eglSwapBuffers)(EGLDisplay dpy, EGLSurface surf) = -1;
-
-EGLBoolean new_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface)
+// 欲接替ioctl的新函数地址，其中内部调用了老的ioctl
+int new_ioctl (int __fd, unsigned long int __request, void * arg)
 {
-    LOGD("New eglSwapBuffers\n");
-    if (old_eglSwapBuffers == -1)
-        LOGD("error\n");
-    return old_eglSwapBuffers(dpy, surface);
+    if ( __request == BINDER_WRITE_READ )
+    {
+        call_count++;
+//        char value[PROPERTY_VALUE_MAX] = {'\0'};
+        LOGD("call_count = %d", call_count);
+//        snprintf(value, PROPERTY_VALUE_MAX, "%d", call_count);
+//        property_set(PROP_IOCTL_CALL_COUNT, value);
+    }
+
+    int res = (*old_ioctl)(__fd, __request, arg);
+    return res;
 }
+
 
 void* get_module_base(pid_t pid, const char* module_name)
 {
@@ -101,14 +97,17 @@ void* get_module_base(pid_t pid, const char* module_name)
     return (void *)addr;
 }
 
-#define LIBSF_PATH  "/system/lib/libsurfaceflinger.so"
-int hook_eglSwapBuffers()
+#define LIBSF_PATH  "/system/lib/libbinder.so"
+int hook_ioctlBuffers()
 {
-    old_eglSwapBuffers = eglSwapBuffers;
-    LOGD("Orig eglSwapBuffers = %p\n", old_eglSwapBuffers);
-    void * base_addr = get_module_base(getpid(), LIBSF_PATH);
-    LOGD("libsurfaceflinger.so address = %p\n", base_addr);
+	old_ioctl = ioctl;
+    LOGD("Ioctl addr: %p. New addr %p\n", ioctl, new_ioctl);
 
+    // get addr map in progress
+    void * base_addr = get_module_base(getpid(), LIBSF_PATH);
+    LOGD("libbinder.so address = %p\n", base_addr);
+
+    // open so file
     int fd;
     fd = open(LIBSF_PATH, O_RDONLY);
     if (-1 == fd) {
@@ -116,9 +115,11 @@ int hook_eglSwapBuffers()
         return -1;
     }
 
+    // elf header info
     Elf32_Ehdr ehdr;
     read(fd, &ehdr, sizeof(Elf32_Ehdr));
 
+    // get section offsize
     unsigned long shdr_addr = ehdr.e_shoff;
     int shnum = ehdr.e_shnum;
     int shent_size = ehdr.e_shentsize;
@@ -151,22 +152,21 @@ int hook_eglSwapBuffers()
 
                 for (i = 0; i < out_size; i += 4) {
                     got_item = *(uint32_t *)(out_addr + i);
-                    if (got_item  == old_eglSwapBuffers) {
-                        LOGD("Found eglSwapBuffers in got\n");
+                    if (got_item  == old_ioctl) {
+                        LOGD("Found old_ioctl in got\n");
                         got_found = 1;
 
+                        LOGD("out_addr + i = %p", out_addr + i);
                         uint32_t page_size = getpagesize();
-                        uint32_t entry_page_start = (out_addr + i) & (~(page_size - 1));
-                        mprotect((uint32_t *)entry_page_start, page_size, PROT_READ | PROT_WRITE);
-                        *(uint32_t *)(out_addr + i) = new_eglSwapBuffers;
-
-                        LOGD("out_addr + i = %d", out_addr + i);
                         LOGD("page_size = %d", page_size);
+                        uint32_t entry_page_start = (out_addr + i) & (~(page_size - 1));
                         LOGD("~(page_size - 1) = %d", ~(page_size - 1));
-                        LOGD("entry_page_start = %d", entry_page_start);
+                        LOGD("entry_page_start = %p", entry_page_start);
+                        mprotect((uint32_t *)entry_page_start, page_size, PROT_READ | PROT_WRITE);
+                        *(uint32_t *)(out_addr + i) = new_ioctl;
 
                         break;
-                    } else if (got_item == new_eglSwapBuffers) {
+                    } else if (got_item == new_ioctl) {
                         LOGD("Already hooked\n");
                         break;
                     }
@@ -185,12 +185,7 @@ int hook_eglSwapBuffers()
 int hook_entry(char * a){
     LOGD("Hook success\n");
     LOGD("Start hooking\n");
-    hook_eglSwapBuffers();
+    hook_ioctlBuffers();
     return 0;
 }
 
-//int hook_entry(char * a){
-//    LOGD("Hook success, pid = %d\n", getpid());
-//    LOGD("Hello %s\n", a);
-//    return 0;
-//}

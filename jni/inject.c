@@ -34,6 +34,65 @@
 const char *libc_path = "/system/lib/libc.so";
 const char *linker_path = "/system/bin/linker";
 
+/**
+ * #define PTRACE_TRACEME 0 // 将当前被跟踪的进程切换到停止状态,对于每一个进程，PTRACE_TRACEME 只能被调用一次
+ *
+#define PTRACE_PEEKTEXT 1
+#define PTRACE_PEEKDATA 2
+//PTRACE_PEEKTEXT and PTRACE_PEEKDATA(read) 分别从代码区和正被调试进程的地址空间区读取机器字。在许多当代的平台中，这两个指令是等价的。 ptrace 函数接收目标地址 addr ，并返回读到的结果。
+#define PTRACE_PEEKUSR 3
+// 从USER区域中读取一个字节，pid表示被跟踪的子进程，
+ * USER区域地址由addr给出，data为用户变量地址用于返回读到的数据。
+ * USER结构为core文件的前面一部分，它描述了进程中止时的一些状态，
+ * 如：寄存器值，代码、数据段大小，代码、数据段开始地址等。
+ * 在Linux（i386）中通过PTRACE_PEEKUSER和PTRACE_POKEUSR可以访问USER结构的数据有寄存器和调试寄存器
+ *
+ *
+#define PTRACE_POKETEXT 4
+#define PTRACE_POKEDATA 5
+// PTRACE_POKETEXT and PTRACE_POKEDATA(write) 将由 data 传入的机器字写入 addr 所指定的地址
+ *
+#define PTRACE_POKEUSR 6
+// 往USER区域中写入一个字节，pid表示被跟踪的子进程，USER区域地址由addr给出，data为需写入的数据
+
+
+#define PTRACE_CONT 7
+//  PTRACE_CONT and PTRACE_SYSCALL 继续进程标志为 pid 的被调试进程的执行，而不中断与调试器进程的通信。如果 addr == 0 ，
+ * 从上次停止的地址继续执行；否则，从指定的地址继续执行。参数 data 指定发送到被调试进程的信号数量（零说明没有信号
+ *
+#define PTRACE_KILL 8
+// 将 sigkill 发送到被调试进程，以终止其执行
+
+#define PTRACE_SINGLESTEP 9
+// 标志为 pid 的进程的单步执行，即执行下一条机器指令并切换为停止状态
+
+#define PTRACE_ATTACH 0x10
+// PTRACE_ATTACH 将进程标志为 pid 的运行进程切换为停止状态，在这种情形下，调试器进程成为“父进程”。
+ * 其他的所有参数都被忽略。进程必须具有与调试进程相同的用户标志（ UID ），并且不能是 setuid/setduid 进程（否则就要用 root 来调试）。
+ * 它会向子进程发送SIGSTOP信号，于是我们可以察看和修改子进程，然后使用 ptrace( PTRACE_DETACH, …)来使子进程继续运行下去
+
+
+#define PTRACE_DETACH 0x11
+// 停止进程标志为 pid 进程（由 PTRACE_ATTACH 和 PTRACE_TRACEME指定）的调试，并继续其常态运行。其他的所有参数都被忽略
+
+#define PTRACE_SYSCALL 24
+
+
+#define PTRACE_GETREGS 12
+//  PTRACE_GETREGS and PTRACE_GETFPREGS将一般用途寄存器、段寄存器和调试寄存器的值读入到地址由 addr 指针所指定的调试器进程的内存区中。寄存器结构的描述放在头文件
+ *
+#define PTRACE_SETREGS 13
+// PTRACE_SETREGS and PTRACE_SETFPREGS 通过拷贝由addr 指针所指定的内存区域的内容来设置被调试 进程 的寄存器的值
+#define PTRACE_GETFPREGS 14
+#define PTRACE_SETFPREGS 15
+
+
+#define PTRACE_SETOPTIONS 0x4200
+#define PTRACE_GETEVENTMSG 0x4201
+#define PTRACE_GETSIGINFO 0x4202
+#define PTRACE_SETSIGINFO 0x4203
+
+ */
 int ptrace_readdata(pid_t pid,  uint8_t *src, uint8_t *buf, size_t size)
 {
     uint32_t i, j, remain;
@@ -76,18 +135,20 @@ int ptrace_writedata(pid_t pid, uint8_t *dest, uint8_t *data, size_t size)
     uint8_t *laddr;
 
     //很巧妙的联合体，这样就可以方便的以字节为单位写入4字节数据，再以long为单位ptrace_poketext到栈中
+    //一个页的大小 4096字节，是4字节的整数倍
     union u {
         long val;
         char chars[sizeof(long)];
     } d;
 
     j = size / 4;
-    remain = size % 4;
+    remain = size % 4; // 剩余不足4个字节，单个写入，最大限度保持原虚拟内存数据
 
     laddr = data;
 
     for (i = 0; i < j; i ++) { // 4字节为单位进行数据写入
         memcpy(d.chars, laddr, 4);
+        // PTRACE_POKETEXT 往内存地址中写入一个字节。pid表示被跟踪的子进程，内存地址由addr给出，data为所要写入的数据
         ptrace(PTRACE_POKETEXT, pid, dest, d.val);
 
         dest  += 4;
@@ -96,6 +157,7 @@ int ptrace_writedata(pid_t pid, uint8_t *dest, uint8_t *data, size_t size)
 
     //为了最大程度的保持原栈的数据，先读取dest的long数据，然后只更改其中的前remain字节，再写回
     if (remain > 0) {
+        // PTRACE_PEEKTEXT 从内存地址中读取一个字节，pid表示被跟踪的子进程，内存地址由addr给出，data为用户变量地址用于返回读到的数据。在Linux（i386）中用户代码段与用户数据段重合所以读取代码段和数据段数据处理是一样的
         d.val = ptrace(PTRACE_PEEKTEXT, pid, dest, 0);
         for (i = 0; i < remain; i ++) {
             d.chars[i] = *laddr ++;
@@ -112,6 +174,27 @@ int ptrace_writedata(pid_t pid, uint8_t *dest, uint8_t *data, size_t size)
     return 0;
 }
 
+/**
+ #define ARM_cpsr uregs[16] 程序状态寄存器
+#define ARM_pc uregs[15] 程序计数器下一条将要执行的指令
+#define ARM_lr uregs[14] 寄存器，返回地址link
+#define ARM_sp uregs[13] 栈指针
+#define ARM_ip uregs[12] 暂存sp没什么大作用
+#define ARM_fp uregs[11] 栈帧zhizhen
+#define ARM_r10 uregs[10]
+#define ARM_r9 uregs[9]
+#define ARM_r8 uregs[8]
+#define ARM_r7 uregs[7]
+#define ARM_r6 uregs[6]
+#define ARM_r5 uregs[5]
+#define ARM_r4 uregs[4]
+#define ARM_r3 uregs[3]
+#define ARM_r2 uregs[2]
+#define ARM_r1 uregs[1]
+#define ARM_r0 uregs[0]
+#define ARM_ORIG_r0 uregs[17]
+
+ */
 #if defined(__arm__)
 int ptrace_call(pid_t pid, uint32_t addr, long *params, uint32_t num_params, struct pt_regs* regs)
 {
@@ -211,6 +294,7 @@ long ptrace_call(pid_t pid, uint32_t addr, long *params, uint32_t num_params, st
 
 int ptrace_getregs(pid_t pid, struct pt_regs * regs)
 {
+	// 读取寄存器值，pid表示被跟踪的子进程，data为用户变量地址用于返回读到的数据。此功能将读取所有17个基本寄存器的值
     if (ptrace(PTRACE_GETREGS, pid, NULL, regs) < 0) {
         perror("ptrace_getregs: Can not get register values");
         return -1;
@@ -221,6 +305,7 @@ int ptrace_getregs(pid_t pid, struct pt_regs * regs)
 
 int ptrace_setregs(pid_t pid, struct pt_regs * regs)
 {
+	// 设置寄存器值，pid表示被跟踪的子进程，data为用户数据地址。此功能将设置所有17个基本寄存器的值
     if (ptrace(PTRACE_SETREGS, pid, NULL, regs) < 0) {
         perror("ptrace_setregs: Can not set register values");
         return -1;
@@ -231,6 +316,7 @@ int ptrace_setregs(pid_t pid, struct pt_regs * regs)
 
 int ptrace_continue(pid_t pid)
 {
+	// 继续执行。pid表示被跟踪的子进程，signal为0则忽略引起调试进程中止的信号，若不为0则继续处理信号signal。
     if (ptrace(PTRACE_CONT, pid, NULL, 0) < 0) {
         perror("ptrace_cont");
         return -1;
@@ -241,6 +327,7 @@ int ptrace_continue(pid_t pid)
 
 int ptrace_attach(pid_t pid)
 {
+	// 跟踪指定pid进程。pid表示被跟踪进程。被跟踪进程将成为当前进程的子进程，并进入中止状态。调试器进程成为"父进程"
     if (ptrace(PTRACE_ATTACH, pid, NULL, 0) < 0) {
         perror("ptrace_attach");
         DEBUG_PRINT("ptrace_attach error : %d", errno);
@@ -248,13 +335,14 @@ int ptrace_attach(pid_t pid)
     }
 
     int status = 0;
-    waitpid(pid, &status , WUNTRACED);
+    waitpid(pid, &status , WUNTRACED); // WUNTRACED 若子进程进入暂停状态，则马上返回，但子进程的结束状态不予以理会
 
     return 0;
 }
 
 int ptrace_detach(pid_t pid)
 {
+	// 结束跟踪。 pid表示被跟踪的子进程。结束跟踪后被跟踪进程将继续执行
     if (ptrace(PTRACE_DETACH, pid, NULL, 0) < 0) {
         perror("ptrace_detach");
         return -1;
@@ -313,6 +401,7 @@ void* get_remote_addr(pid_t target_pid, const char* module_name, void* local_add
 
     // 获取mmap在目标函数中的偏移地址，mmap在libc.so动态库中
     /**
+     * "/proc/self/maps" 是获取当前进程的虚拟地址映射表
      * 查看正在运行的动态链接的程序中，某个动态库中函数的虚拟地址
      * 方法很简单，首先确定，你需要查看的函数，在哪个动态库中，并且确定该函数相对于该动态库的相对地址。
      * 其次，在程序运行期间，查看程序的映射表，找到动态库的加载地址。最后将这两个地址相加，就是你要的库函数在运行时的虚拟地址
@@ -451,9 +540,23 @@ int inject_remote_process(pid_t target_pid, const char *library_path, const char
         goto exit;
 
     // 从寄存器中获取mmap函数的返回值，即申请的内存首地址：
+//    map_base = ptrace_ip(&regs);
     map_base = ptrace_retval(&regs);
+    DEBUG_PRINT("map_base addr = %p\n", map_base);
 
     // 依次获取linker中dlopen、dlsym、dlclose、dlerror函数的地址:
+    // void * dlopen( const char * pathname, int mode );  RTLD_LAZY 暂缓决定，等有需要时再解出符号
+    // RTLD_NOW 立即决定，返回前解除所有未决定的符号。
+    // RTLD_LOCAL
+    // RTLD_GLOBAL 允许导出符号
+    // RTLD_GROUP
+    // RTLD_WORLD 打开一个动态链接库
+    //
+
+    // void*dlsym(void* handle,const char* symbol)  根据动态链接库操作句柄与符号，返回符号对应的地址
+    // 使用这个函数不但可以获取函数地址，也可以获取变量地址
+
+    // dlclose用于关闭指定句柄的动态链接库，只有当此动态链接库的使用计数为0时,才会真正被系统卸载。
     dlopen_addr = get_remote_addr( target_pid, linker_path, (void *)dlopen );
     dlsym_addr = get_remote_addr( target_pid, linker_path, (void *)dlsym );
     dlclose_addr = get_remote_addr( target_pid, linker_path, (void *)dlclose );
@@ -462,7 +565,7 @@ int inject_remote_process(pid_t target_pid, const char *library_path, const char
     DEBUG_PRINT("[+] Get imports: dlopen: %x, dlsym: %x, dlclose: %x, dlerror: %x\n",
             dlopen_addr, dlsym_addr, dlclose_addr, dlerror_addr);
 
-    printf("library path = %s\n", library_path);
+    DEBUG_PRINT("library path = %s\n", library_path);
     // 调用dlopen函数：
     /**
      * ①将要注入的so名写入前面mmap出来的内存
@@ -478,21 +581,31 @@ int inject_remote_process(pid_t target_pid, const char *library_path, const char
     if (ptrace_call_wrapper(target_pid, "dlopen", dlopen_addr, parameters, 2, &regs) == -1)
         goto exit;
 
-    void * sohandle = ptrace_retval(&regs);
+    // 从寄存器中获取libxxx.so句柄值
+//    void * sohandle = ptrace_ip(&regs);
+    void * sohandle = ptrace_retval(&regs); // 返回动态库可操作句柄
+
+    DEBUG_PRINT("sohandle addr = %p\n", sohandle);
+
 
     // 调用dlsym函数：
-#define FUNCTION_NAME_ADDR_OFFSET       0x100 //为functionname另找一块区域
+#define FUNCTION_NAME_ADDR_OFFSET       0x100 //为function name另找一块区域  在这个区域里保存率function_name这个字符串常量
+    // 但是这个地址如何找呢？随意去一个偏移量吗？这个偏移量需要大于libsize，但是会不会破坏原有的虚拟内存数据？
+    // 这里应该对修改的区域进行还原
     ptrace_writedata(target_pid, map_base + FUNCTION_NAME_ADDR_OFFSET, function_name, strlen(function_name) + 1);
     parameters[0] = sohandle;
     parameters[1] = map_base + FUNCTION_NAME_ADDR_OFFSET;
 
+    // 但是map_base + FUNCTION_NAME_ADDR_OFFSE就确定为hook_entry的地址吗？？不是，而是自己另外开辟的内存段，用来存储字符串
+    // 这个函数获取function_name在so开辟VMA中的地址：returning the address where that symbol is loaded into memory
     if (ptrace_call_wrapper(target_pid, "dlsym", dlsym_addr, parameters, 2, &regs) == -1)
         goto exit;
 
+//    void * hook_entry_addr = ptrace_ip(&regs);
     void * hook_entry_addr = ptrace_retval(&regs);
     DEBUG_PRINT("hook_entry_addr = %p\n", hook_entry_addr);
 
-#define FUNCTION_PARAM_ADDR_OFFSET      0x200
+#define FUNCTION_PARAM_ADDR_OFFSET      0x200 // 同上，在一块新的内存中开辟一块，用来保存输入参数字符串
     ptrace_writedata(target_pid, map_base + FUNCTION_PARAM_ADDR_OFFSET, param, strlen(param) + 1);
     parameters[0] = map_base + FUNCTION_PARAM_ADDR_OFFSET;
 
@@ -501,7 +614,7 @@ int inject_remote_process(pid_t target_pid, const char *library_path, const char
         goto exit;
 
     printf("Press enter to dlclose and detach\n");
-    getchar();
+    getchar(); // 屏蔽enter按键
     parameters[0] = sohandle;
 
     // 调用dlclose关闭lib:
@@ -518,7 +631,157 @@ exit:
     return ret;
 }
 
+/*
+D/INJECT  (13877): [+] Injecting process: 10562
+D/INJECT  (13877): [+] get_remote_addr: local[40132000], remote[40117000], local_addr[40092558]
+D/INJECT  (13877): [+] Remote mmap address: 40077558
+D/INJECT  (13877): [+] Calling mmap in target process.
+D/INJECT  (13877): [+] Target process returned from mmap, return value=0, pc=4027f57c
+D/INJECT  (13877): map_base addr = 0x4027f57c
+D/INJECT  (13877): [+] get_remote_addr: local[40024000], remote[400a1000], local_addr[40029c79]
+D/INJECT  (13877): [+] get_remote_addr: local[40024000], remote[400a1000], local_addr[40029be5]
+D/INJECT  (13877): [+] get_remote_addr: local[40024000], remote[400a1000], local_addr[40029b25]
+D/INJECT  (13877): [+] get_remote_addr: local[40024000], remote[400a1000], local_addr[40029b15]
+D/INJECT  (13877): [+] Get imports: dlopen: 400a6c79, dlsym: 400a6be5, dlclose: 400a6b25, dlerror: 400a6b15
+D/INJECT  (13877): library path = /data/data/com.example.hellojni/libhello.so
+D/INJECT  (13877): [+] Calling dlopen in target process.
+D/INJECT  (13877): [+] Target process returned from dlopen, return value=400bb154, pc=0
+D/INJECT  (13877): sohandle addr = 0x400bb154
+D/INJECT  (13877): [+] Calling dlsym in target process.
+D/INJECT  (13877): [+] Target process returned from dlsym, return value=41a93c0c, pc=0
+D/INJECT  (13877): hook_entry_addr = 0x41a93c0c
+D/INJECT  (13877): [+] Calling hook_entry in target process.
+D/INJECT  (10562): Hook success, pid = 10562
+D/INJECT  (10562): Hello I'm parameter!
+D/INJECT  (13877): [+] Target process returned from hook_entry, return value=0, pc=0
+D/INJECT  (13877): [+] Calling dlclose in target process.
+D/INJECT  (13877): [+] Target process returned from dlclose, return value=400bb154, pc=40029b24
+ */
+int inject_remote_process_samsung(pid_t target_pid, const char *library_path, const char *function_name, const char *param, size_t param_size)
+{
+    int ret = -1;
+    void *mmap_addr, *dlopen_addr, *dlsym_addr, *dlclose_addr, *dlerror_addr;
+    void *local_handle, *remote_handle, *dlhandle;
+    uint8_t *map_base = 0;
+    uint8_t *dlopen_param1_ptr, *dlsym_param2_ptr, *saved_r0_pc_ptr, *inject_param_ptr, *remote_code_ptr, *local_code_ptr;
 
+    struct pt_regs regs, original_regs;
+    extern uint32_t _dlopen_addr_s, _dlopen_param1_s, _dlopen_param2_s, _dlsym_addr_s, \
+        _dlsym_param2_s, _dlclose_addr_s, _inject_start_s, _inject_end_s, _inject_function_param_s, \
+        _saved_cpsr_s, _saved_r0_pc_s;
+
+    uint32_t code_length;
+    long parameters[10];
+
+    DEBUG_PRINT("[+] Injecting process: %d\n", target_pid);
+
+    if (ptrace_attach(target_pid) == -1)
+        goto exit;
+
+    if (ptrace_getregs(target_pid, &regs) == -1)
+        goto exit;
+
+    /* save original registers */
+    memcpy(&original_regs, &regs, sizeof(regs));
+
+    mmap_addr = get_remote_addr(target_pid, libc_path, (void *)mmap);
+    DEBUG_PRINT("[+] Remote mmap address: %x\n", mmap_addr);
+
+    /* call mmap */
+    parameters[0] = 0;  // addr
+    parameters[1] = 0x4000; // size
+    parameters[2] = PROT_READ | PROT_WRITE | PROT_EXEC;  // prot
+    parameters[3] =  MAP_ANONYMOUS | MAP_PRIVATE; // flags
+    parameters[4] = 0; //fd
+    parameters[5] = 0; //offset
+
+    if (ptrace_call_wrapper(target_pid, "mmap", mmap_addr, parameters, 6, &regs) == -1)
+        goto exit;
+
+    // 从寄存器中获取mmap函数的返回值，即申请的内存首地址：
+    map_base = ptrace_ip(&regs);
+    DEBUG_PRINT("map_base addr = %p\n", map_base);
+
+    // dlclose用于关闭指定句柄的动态链接库，只有当此动态链接库的使用计数为0时,才会真正被系统卸载。
+    dlopen_addr = get_remote_addr( target_pid, linker_path, (void *)dlopen );
+    dlsym_addr = get_remote_addr( target_pid, linker_path, (void *)dlsym );
+    dlclose_addr = get_remote_addr( target_pid, linker_path, (void *)dlclose );
+    dlerror_addr = get_remote_addr( target_pid, linker_path, (void *)dlerror );
+
+    DEBUG_PRINT("[+] Get imports: dlopen: %x, dlsym: %x, dlclose: %x, dlerror: %x\n",
+            dlopen_addr, dlsym_addr, dlclose_addr, dlerror_addr);
+
+    DEBUG_PRINT("library path = %s\n", library_path);
+    ptrace_writedata(target_pid, map_base, library_path, strlen(library_path) + 1);
+
+    parameters[0] = map_base;
+    parameters[1] = RTLD_NOW| RTLD_GLOBAL;
+
+    if (ptrace_call_wrapper(target_pid, "dlopen", dlopen_addr, parameters, 2, &regs) == -1)
+        goto exit;
+
+    // 从寄存器中获取libxxx.so句柄值
+    void * sohandle = ptrace_retval(&regs);
+
+    DEBUG_PRINT("sohandle addr = %p\n", sohandle);
+
+
+    // 调用dlsym函数：
+#define FUNCTION_NAME_ADDR_OFFSET       0x200 //为function name另找一块区域
+    ptrace_writedata(target_pid, map_base + FUNCTION_NAME_ADDR_OFFSET, function_name, strlen(function_name) + 1);
+    parameters[0] = sohandle;
+    parameters[1] = map_base + FUNCTION_NAME_ADDR_OFFSET;
+
+    // 但是map_base + FUNCTION_NAME_ADDR_OFFSE就确定为hook_entry的地址吗？？
+    if (ptrace_call_wrapper(target_pid, "dlsym", dlsym_addr, parameters, 2, &regs) == -1)
+        goto exit;
+
+    void * hook_entry_addr = ptrace_retval(&regs);
+    DEBUG_PRINT("hook_entry_addr = %p\n", hook_entry_addr);
+
+#define FUNCTION_PARAM_ADDR_OFFSET      0x300
+    ptrace_writedata(target_pid, map_base + FUNCTION_PARAM_ADDR_OFFSET, param, strlen(param) + 1);
+    parameters[0] = map_base + FUNCTION_PARAM_ADDR_OFFSET;
+
+    // 调用hook_entry函数：
+    if (ptrace_call_wrapper(target_pid, "hook_entry", hook_entry_addr, parameters, 1, &regs) == -1)
+        goto exit;
+
+    parameters[0] = sohandle;
+    if (ptrace_call_wrapper(target_pid, "dlclose", dlclose, parameters, 1, &regs) == -1)
+        goto exit;
+
+    /* restore */
+    // 恢复现场并退出ptrace:
+    ptrace_setregs(target_pid, &original_regs);
+    ptrace_detach(target_pid);
+    ret = 0;
+
+exit:
+    return ret;
+}
+
+int hookSystemService() {
+    pid_t target_pid;
+    target_pid = find_pid_of("system_server");
+    if (-1 == target_pid) {
+    	LOGD("Can't find the process\n");
+        return -1;
+    }
+//    return inject_remote_process(target_pid, "/data/data/com.example.hellojni/lib/libmyioctl.so", "hook_entry", "I'm parameter!", strlen("I'm parameter!") );
+    return inject_remote_process_samsung(target_pid, "/data/data/com.example.hellojni/libmyioctl.so", "hook_entry", "I'm parameter!", strlen("I'm parameter!") );
+}
+
+int hookSurfaceflinger() {
+    pid_t target_pid;
+    target_pid = find_pid_of("/system/bin/surfaceflinger");
+    if (-1 == target_pid) {
+    	LOGD("Can't find the process\n");
+        return -1;
+    }
+    return inject_remote_process(target_pid, "/data/data/com.example.hellojni/lib/libhello.so", "hook_entry", "I'm parameter!", strlen("I'm parameter!") );
+//    inject_remote_process_samsung(target_pid, "/data/data/com.example.hellojni/libhello.so", "hook_entry", "I'm parameter!", strlen("I'm parameter!") );
+}
 /////////////////////////////////JNI/////////////////////////////////////////
 
 // 实现自定义JNI_OnLoad JNI_OnUnload
@@ -623,13 +886,6 @@ JNIEXPORT jint JNICALL JNI_UnOnLoad(JavaVM* vm, void* reserved)
 
 
 int main(int argc, char** argv) {
-    pid_t target_pid;
-    target_pid = find_pid_of("/system/bin/surfaceflinger");
-    if (-1 == target_pid) {
-        printf("Can't find the process\n");
-        return -1;
-    }
-//    inject_remote_process(target_pid, "/data/data/com.example.hellojni/lib/libhello.so", "hook_entry", "I'm parameter!", strlen("I'm parameter!") );
-    inject_remote_process(target_pid, "/data/data/com.example.hellojni/libhello.so", "hook_entry", "I'm parameter!", strlen("I'm parameter!") );
-    return 0;
+//	return hookSurfaceflinger();
+	return hookSystemService();
 }

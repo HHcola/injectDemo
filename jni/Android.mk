@@ -31,7 +31,14 @@ include $(CLEAR_VARS)
 
 LOCAL_MODULE    := hello
 LOCAL_SRC_FILES	:= hello.c 
-LOCAL_LDLIBS := -L$(SYSROOT)/usr/lib -llog 
+LOCAL_LDLIBS := -L$(SYSROOT)/usr/lib -llog -lEGL
 
 include $(BUILD_SHARED_LIBRARY)
-#include $(BUILD_EXECUTABLE)
+
+include $(CLEAR_VARS)
+
+LOCAL_MODULE    := myioctl
+LOCAL_SRC_FILES	:= ioctl.c 
+LOCAL_LDLIBS := -L$(SYSROOT)/usr/lib -llog -lEGL
+
+include $(BUILD_SHARED_LIBRARY)
